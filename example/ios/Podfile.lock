@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - glbview (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - glbview (from `.symlinks/plugins/glbview/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  glbview:
+    :path: ".symlinks/plugins/glbview/ios"
+
+SPEC CHECKSUMS:
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  glbview: caa6b2478eb000e6bef1ee96fded417b23dc81ea
+
+PODFILE CHECKSUM: 3ba3a73b1b12adcf321a227a745625fe0888cc82
+
+COCOAPODS: 1.16.2
