@@ -1,3 +1,7 @@
+## 0.1.1
+
+* No functional changes; republished after 0.1.0.
+
 ## 0.1.0
 
 * Initial release.
