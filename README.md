@@ -11,6 +11,12 @@ natively and shown through a `Texture` widget:
 
 No WebView or third-party 3D packages.
 
+<p>
+  <img src="https://raw.githubusercontent.com/Samandar-Rajabboyev/glbview/main/doc/screenshots/cube.png" width="260" alt="Glossy textured cube">
+  <img src="https://raw.githubusercontent.com/Samandar-Rajabboyev/glbview/main/doc/screenshots/star.png" width="260" alt="Metallic gold star">
+</p>
+<img src="https://raw.githubusercontent.com/Samandar-Rajabboyev/glbview/main/doc/screenshots/matte_vs_glossy.png" width="526" alt="Matte vs glossy comparison">
+
 ```dart
 GlbView.asset(
   'assets/model.glb',

@@ -3,6 +3,13 @@ description: "Native GLB (binary glTF 2.0) viewer rendered with OpenGL ES on And
 version: 0.1.0
 repository: https://github.com/Samandar-Rajabboyev/glbview
 issue_tracker: https://github.com/Samandar-Rajabboyev/glbview/issues
+screenshots:
+  - description: Textured cube with glossy lacquer shading.
+    path: doc/screenshots/cube.png
+  - description: Gold star with metallic PBR shading and studio reflections.
+    path: doc/screenshots/star.png
+  - description: Matte vs glossy, with a purple-pink gradient environment.
+    path: doc/screenshots/matte_vs_glossy.png
 topics:
   - 3d
   - gltf
