@@ -11,7 +11,7 @@ screenshots:
   - description: Matte vs glossy, with a purple-pink gradient environment.
     path: doc/screenshots/matte_vs_glossy.png
 topics:
-  - 3d
+  - graphics
   - gltf
   - opengl
   - metal
