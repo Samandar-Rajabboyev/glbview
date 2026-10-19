@@ -1,3 +1,22 @@
+## 0.3.0
+
+* Precaching: `GlbView.precacheAsset` / `GlbView.precacheMemory` parse and
+  upload a model ahead of time; showing it later takes about one frame.
+  `evictAsset`, `evictMemory`, `clearCache` and `maxUnusedModels` manage the
+  cache. `GlbView.memory` gains `cacheKey`.
+* Models are now cached across views and screen visits: parsed once,
+  uploaded to the GPU once, shared by every `GlbView`.
+* Faster cold loads: indexed geometry (about 4x less parse work and data for
+  typical models), parallel texture decoding, and the shader compiles in the
+  background when the plugin starts.
+* Android: one GL thread and context for all views instead of one per view.
+* iOS: one shared Metal pipeline and model store.
+* Material overrides are applied per view on the GPU, without re-uploading
+  geometry.
+* `GlbView.debugTimings` logs load timings.
+* Breaking: `GlbPrimitive` now has `indices`; `vertices` holds unique
+  vertices instead of one vertex per triangle corner.
+
 ## 0.2.0
 
 * `materialOverrides` on `GlbView`: replace a material's base color texture,

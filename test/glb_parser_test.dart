@@ -25,7 +25,10 @@ void main() {
     final model = parseGlb(_asset('cube.glb'));
     expect(model.primitives, hasLength(1));
     final p = model.primitives.single;
-    expect(p.vertexCount, 36);
+    // Indexed: 24 unique vertices (4 per face), 12 triangles.
+    expect(p.vertexCount, 24);
+    expect(p.triangleCount, 12);
+    expect(p.indices.every((i) => i < p.vertexCount), isTrue);
     expect(p.texture, isNotNull);
     expect(p.texture!.sublist(1, 4), 'PNG'.codeUnits);
     expect(p.baseColor, [1, 1, 1, 1]);
@@ -58,6 +61,8 @@ void main() {
   test('parses the star with generated normals and node transforms', () {
     final model = parseGlb(_asset('star.glb'));
     final p = model.primitives.single;
+    // No normals in the file: flat shading, one vertex per triangle corner.
+    expect(p.triangleCount, 10 * 4);
     expect(p.vertexCount, 10 * 4 * 3);
     expect(p.texture, isNull);
     expect(p.baseColor[1], closeTo(0.62, 1e-6));
@@ -65,19 +70,16 @@ void main() {
 
     // Flat normals face the same way as the triangle's winding (CCW).
     final v = p.vertices;
-    for (var t = 0; t < p.vertexCount; t += 3) {
-      final o = t * kFloatsPerVertex;
-      final a = [v[o], v[o + 1], v[o + 2]];
-      final b = [
-        v[o + kFloatsPerVertex],
-        v[o + kFloatsPerVertex + 1],
-        v[o + kFloatsPerVertex + 2]
-      ];
-      final c = [
-        v[o + 2 * kFloatsPerVertex],
-        v[o + 2 * kFloatsPerVertex + 1],
-        v[o + 2 * kFloatsPerVertex + 2]
-      ];
+    List<double> pos(int i) => [
+          v[i * kFloatsPerVertex],
+          v[i * kFloatsPerVertex + 1],
+          v[i * kFloatsPerVertex + 2],
+        ];
+    for (var t = 0; t < p.indices.length; t += 3) {
+      final a = pos(p.indices[t]);
+      final b = pos(p.indices[t + 1]);
+      final c = pos(p.indices[t + 2]);
+      final o = p.indices[t] * kFloatsPerVertex;
       final e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
       final e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
       final cross = [
@@ -106,6 +108,8 @@ void main() {
         isTrue);
     expect(model.primitives.first.clearcoat, closeTo(0.35, 1e-6));
     expect(_maxRadius(model), closeTo(1, 1e-5));
+    // 188k triangle corners share ~33k vertices.
+    expect(model.vertexCount, lessThan(40000));
   });
 
   test('material overrides replace inputs by material name', () {
@@ -124,6 +128,7 @@ void main() {
     final p = overridden.primitives.single;
     expect(identical(p.texture, png), isTrue);
     expect(identical(p.vertices, original.vertices), isTrue); // shared
+    expect(identical(p.indices, original.indices), isTrue);
     // sRGB 0x80 -> linear (0.502^2.2, the same gamma as the shaders).
     expect(p.baseColor[0], closeTo(0.2195, 0.001));
     expect(p.baseColor[3], 1);

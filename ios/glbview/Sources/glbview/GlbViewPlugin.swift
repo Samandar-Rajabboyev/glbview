@@ -1,13 +1,24 @@
 import Flutter
 import UIKit
 
-/// Hosts native GLB renderers, one per Flutter texture.
+/// Bridges the method channel to the shared [GlbMetal] state and per-view
+/// [GlbRenderer]s.
 public class GlbViewPlugin: NSObject, FlutterPlugin {
   private let textures: FlutterTextureRegistry
+  /// Created at registration so the pipeline compiles before any view.
+  private let metal: GlbMetal?
+  private let metalError: String?
   private var renderers: [Int64: GlbRenderer] = [:]
 
   init(textures: FlutterTextureRegistry) {
     self.textures = textures
+    do {
+      metal = try GlbMetal()
+      metalError = nil
+    } catch {
+      metal = nil
+      metalError = "\(error)"
+    }
   }
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -23,15 +34,21 @@ public class GlbViewPlugin: NSObject, FlutterPlugin {
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let metal = metal else {
+      result(FlutterError(code: "no_metal", message: metalError, details: nil))
+      return
+    }
     let args = call.arguments as? [String: Any] ?? [:]
     switch call.method {
     case "create":
-      let width = max(1, (args["width"] as? NSNumber)?.intValue ?? 1)
-      let height = max(1, (args["height"] as? NSNumber)?.intValue ?? 1)
-      let autoRotate = (args["autoRotate"] as? NSNumber)?.doubleValue ?? 0
       do {
         let renderer = try GlbRenderer(
-          width: width, height: height, autoRotate: autoRotate, registry: textures)
+          metal: metal,
+          width: max(1, (args["width"] as? NSNumber)?.intValue ?? 1),
+          height: max(1, (args["height"] as? NSNumber)?.intValue ?? 1),
+          autoRotate: (args["autoRotate"] as? NSNumber)?.doubleValue ?? 0,
+          logTimings: (args["debugTimings"] as? NSNumber)?.boolValue ?? false,
+          registry: textures)
         let id = textures.register(renderer)
         renderer.start(textureId: id)
         renderers[id] = renderer
@@ -40,36 +57,62 @@ public class GlbViewPlugin: NSObject, FlutterPlugin {
         result(FlutterError(code: "create_failed", message: "\(error)", details: nil))
       }
 
-    case "loadModel":
-      guard let renderer = renderer(args, result) else { return }
-      guard let raw = args["primitives"] as? [[String: Any]] else {
-        result(FlutterError(code: "bad_args", message: "Missing primitives", details: nil))
+    case "cacheModel":
+      guard let key = args["key"] as? String, let raw = args["primitives"] as? [[String: Any]] else {
+        result(FlutterError(code: "bad_args", message: "Missing key or primitives", details: nil))
         return
       }
       var primitives: [PrimitiveData] = []
       for item in raw {
-        guard let vertices = item["vertices"] as? FlutterStandardTypedData else { continue }
+        guard let vertices = item["vertices"] as? FlutterStandardTypedData,
+          let indices = item["indices"] as? FlutterStandardTypedData
+        else { continue }
         let color = (item["baseColor"] as? FlutterStandardTypedData).map(Self.floats)
         primitives.append(
           PrimitiveData(
             vertices: vertices.data,
+            indices: indices.data,
             baseColor: color?.count == 4 ? color! : [1, 1, 1, 1],
-            texture: (item["texture"] as? FlutterStandardTypedData)?.data,
+            texture: Self.bytes(item["texture"]),
             metallic: (item["metallic"] as? NSNumber)?.floatValue ?? 0,
             roughness: (item["roughness"] as? NSNumber)?.floatValue ?? 0.5,
-            normalTexture: (item["normalTexture"] as? FlutterStandardTypedData)?.data,
+            normalTexture: Self.bytes(item["normalTexture"]),
             normalScale: (item["normalScale"] as? NSNumber)?.floatValue ?? 1,
-            metallicRoughnessTexture: (item["metallicRoughnessTexture"] as? FlutterStandardTypedData)?
-              .data,
+            metallicRoughnessTexture: Self.bytes(item["metallicRoughnessTexture"]),
             clearcoat: (item["clearcoat"] as? NSNumber)?.floatValue ?? 0))
       }
-      renderer.loadModel(primitives) { error in
-        if let error = error {
-          result(FlutterError(code: "load_failed", message: error, details: nil))
-        } else {
-          result(nil)
-        }
+      metal.cacheModel(
+        key, primitives, logTimings: (args["debugTimings"] as? NSNumber)?.boolValue ?? false
+      ) { error in
+        result(error.map { FlutterError(code: "load_failed", message: $0, details: nil) })
       }
+
+    case "evictModel":
+      if let key = args["key"] as? String { metal.evictModel(key) }
+      result(nil)
+
+    case "setModel":
+      guard let renderer = renderer(args, result) else { return }
+      let key = args["key"] as? String ?? ""
+      if renderer.setModel(key) {
+        result(nil)
+      } else {
+        result(FlutterError(code: "not_cached", message: "Model '\(key)' is not cached", details: nil))
+      }
+
+    case "setOverrides":
+      guard let renderer = renderer(args, result) else { return }
+      let raw = args["overrides"] as? [[String: Any]] ?? []
+      let overrides = raw.compactMap { item -> OverrideData? in
+        guard let index = (item["index"] as? NSNumber)?.intValue else { return nil }
+        return OverrideData(
+          index: index,
+          texture: Self.bytes(item["texture"]),
+          normalTexture: Self.bytes(item["normalTexture"]),
+          metallicRoughnessTexture: Self.bytes(item["metallicRoughnessTexture"]),
+          baseColor: (item["baseColor"] as? FlutterStandardTypedData).map(Self.floats))
+      }
+      renderer.setOverrides(overrides) { result(nil) }
 
     case "setCamera":
       guard let renderer = renderer(args, result) else { return }
@@ -110,6 +153,10 @@ public class GlbViewPlugin: NSObject, FlutterPlugin {
       return nil
     }
     return renderer
+  }
+
+  private static func bytes(_ value: Any?) -> Data? {
+    (value as? FlutterStandardTypedData)?.data
   }
 
   /// ARGB int -> sRGB components 0..1 (alpha ignored).

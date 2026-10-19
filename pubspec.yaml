@@ -1,6 +1,6 @@
 name: glbview
 description: "Native GLB (binary glTF 2.0) viewer rendered with OpenGL ES on Android and Metal on iOS, shown through a Flutter Texture."
-version: 0.2.0
+version: 0.3.0
 repository: https://github.com/Samandar-Rajabboyev/glbview
 issue_tracker: https://github.com/Samandar-Rajabboyev/glbview/issues
 screenshots:

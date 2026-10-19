@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/services.dart';
 
 import 'glb_parser.dart';
@@ -15,11 +17,13 @@ class GlbChannel {
     required int width,
     required int height,
     required double autoRotate,
+    bool debugTimings = false,
   }) async {
     final id = await _channel.invokeMethod<int>('create', {
       'width': width,
       'height': height,
       'autoRotate': autoRotate,
+      'debugTimings': debugTimings,
     });
     if (id == null) {
       throw PlatformException(code: 'create_failed', message: 'No texture id');
@@ -27,13 +31,20 @@ class GlbChannel {
     return id;
   }
 
-  static Future<void> loadModel(int id, GlbModel model) {
-    return _channel.invokeMethod<void>('loadModel', {
-      'id': id,
+  /// Uploads [model] into the native GPU store under [key] (replacing any
+  /// previous model with that key). Completes when it is ready to draw.
+  static Future<void> cacheModel(String key, GlbModel model,
+      {bool debugTimings = false}) {
+    return _channel.invokeMethod<void>('cacheModel', {
+      'key': key,
+      'debugTimings': debugTimings,
       'primitives': [
         for (final p in model.primitives)
           {
             'vertices': p.vertices,
+            // The codec has no Uint32List; indices fit in int32, so send the
+            // same bytes viewed as Int32List.
+            'indices': Int32List.sublistView(p.indices),
             'baseColor': p.baseColor,
             'texture': p.texture,
             'metallic': p.metallic,
@@ -45,6 +56,22 @@ class GlbChannel {
           },
       ],
     });
+  }
+
+  /// Frees a cached model once no view draws it.
+  static Future<void> evictModel(String key) =>
+      _channel.invokeMethod<void>('evictModel', {'key': key});
+
+  /// Makes view [id] draw the cached model [key].
+  static Future<void> setModel(int id, String key) =>
+      _channel.invokeMethod<void>('setModel', {'id': id, 'key': key});
+
+  /// Per-view replacements for primitives of the current model; an empty
+  /// list restores the model's own materials. Completes once applied.
+  static Future<void> setOverrides(
+      int id, List<Map<String, Object?>> overrides) {
+    return _channel
+        .invokeMethod<void>('setOverrides', {'id': id, 'overrides': overrides});
   }
 
   static Future<void> setCamera(

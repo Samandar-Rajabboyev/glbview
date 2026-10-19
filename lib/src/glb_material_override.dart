@@ -68,7 +68,7 @@ extension GlbModelOverrides on GlbModel {
       for (final p in primitives)
         if (overrides[p.materialName] case final o?)
           p.copyWith(
-            baseColor: o.baseColor == null ? null : _linearFactor(o.baseColor!),
+            baseColor: o.baseColor == null ? null : linearFactor(o.baseColor!),
             texture: o.baseColorTexture,
             normalTexture: o.normalTexture,
             metallicRoughnessTexture: o.metallicRoughnessTexture,
@@ -79,7 +79,8 @@ extension GlbModelOverrides on GlbModel {
   }
 }
 
-Float32List _linearFactor(Color c) {
+/// An sRGB Flutter color as a linear glTF color factor.
+Float32List linearFactor(Color c) {
   double lin(double v) => math.pow(v, 2.2).toDouble();
   return Float32List.fromList([lin(c.r), lin(c.g), lin(c.b), c.a]);
 }

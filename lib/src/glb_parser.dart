@@ -21,6 +21,7 @@ class GlbFormatException implements Exception {
 class GlbPrimitive {
   GlbPrimitive({
     required this.vertices,
+    required this.indices,
     required this.baseColor,
     this.texture,
     this.metallic = 0,
@@ -32,9 +33,12 @@ class GlbPrimitive {
     this.materialName,
   });
 
-  /// Non-indexed triangles, interleaved
-  /// `position(3) normal(3) uv(2) tangent(4)` (see [kFloatsPerVertex]).
+  /// Unique vertices, interleaved `position(3) normal(3) uv(2) tangent(4)`
+  /// (see [kFloatsPerVertex]).
   final Float32List vertices;
+
+  /// Triangle list into [vertices], counter-clockwise front faces.
+  final Uint32List indices;
 
   /// RGBA base color factor (linear).
   final Float32List baseColor;
@@ -67,6 +71,8 @@ class GlbPrimitive {
 
   int get vertexCount => vertices.length ~/ kFloatsPerVertex;
 
+  int get triangleCount => indices.length ~/ 3;
+
   /// A copy with the given material inputs replaced. Geometry is shared, not
   /// copied.
   GlbPrimitive copyWith({
@@ -77,6 +83,7 @@ class GlbPrimitive {
   }) {
     return GlbPrimitive(
       vertices: vertices,
+      indices: indices,
       baseColor: baseColor ?? this.baseColor,
       texture: texture ?? this.texture,
       metallic: metallic,
@@ -99,6 +106,9 @@ class GlbModel {
   final List<GlbPrimitive> primitives;
 
   int get vertexCount => primitives.fold(0, (sum, p) => sum + p.vertexCount);
+
+  int get triangleCount =>
+      primitives.fold(0, (sum, p) => sum + p.triangleCount);
 }
 
 const int _magicGltf = 0x46546C67;
@@ -139,7 +149,7 @@ class _GlbParser {
     }
 
     // Collects triangles grouped by material so each material is one draw.
-    final groups = <int, _Builder>{};
+    final groups = <int, _Group>{};
 
     void emitMesh(int meshIndex, _Mat4 world) {
       final mesh = _map(_at(meshes, meshIndex, 'mesh'));
@@ -177,11 +187,12 @@ class _GlbParser {
 
     final primitives = <GlbPrimitive>[];
     for (final entry in groups.entries) {
-      final b = entry.value;
-      if (b.length == 0) continue;
+      final g = entry.value;
+      if (g.indices.length == 0) continue;
       final material = _material(entry.key);
       primitives.add(GlbPrimitive(
-        vertices: b.toList(),
+        vertices: g.vertices.toList(),
+        indices: g.indices.toList(),
         baseColor: material.color,
         texture: material.texture,
         metallic: material.metallic,
@@ -278,7 +289,7 @@ class _GlbParser {
   // Geometry
 
   void _emitPrimitive(
-      Map<String, dynamic> prim, _Mat4 world, Map<int, _Builder> groups) {
+      Map<String, dynamic> prim, _Mat4 world, Map<int, _Group> groups) {
     final mode = prim['mode'] is int ? prim['mode'] as int : 4;
     if (mode != 4 && mode != 5 && mode != 6) {
       return; // Points and lines are ignored.
@@ -342,143 +353,178 @@ class _GlbParser {
         }
       }
     }
-    final n = Float64List(3);
-    final tan = Float64List(3);
-
     final material = prim['material'] is int ? prim['material'] as int : -1;
-    final out = groups.putIfAbsent(material, _Builder.new);
-    out.reserve(indices.length * kFloatsPerVertex);
+    final group = groups.putIfAbsent(material, _Group.new);
+    final p = Float64List(3);
+    final n = Float64List(3);
 
-    final tri = Float64List(9);
-    final order = Int32List(3);
-    for (var t = 0; t + 2 < indices.length; t += 3) {
-      order[0] = indices[t];
-      order[1] = indices[flipWinding ? t + 2 : t + 1];
-      order[2] = indices[flipWinding ? t + 1 : t + 2];
-
-      for (var k = 0; k < 3; k++) {
-        world.transformPoint(positions, order[k] * 3, tri, k * 3);
-      }
-
-      // Per-triangle tangent, used when there are no smooth normals.
-      final hasTriTangent = fileTangents == null &&
-          accT == null &&
-          uvs != null &&
-          _triangleTangent(positions, uvs, indices[t], indices[t + 1],
-              indices[t + 2], triTB);
-
-      double fnx = 0, fny = 0, fnz = 0;
-      if (normals == null) {
-        final ax = tri[3] - tri[0], ay = tri[4] - tri[1], az = tri[5] - tri[2];
-        final bx = tri[6] - tri[0], by = tri[7] - tri[1], bz = tri[8] - tri[2];
-        fnx = ay * bz - az * by;
-        fny = az * bx - ax * bz;
-        fnz = ax * by - ay * bx;
-        final len = math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
-        if (len > 0) {
-          fnx /= len;
-          fny /= len;
-          fnz /= len;
-        } else {
-          fnz = 1;
-        }
-      }
-
-      for (var k = 0; k < 3; k++) {
-        final v = order[k];
-        out.add(tri[k * 3]);
-        out.add(tri[k * 3 + 1]);
-        out.add(tri[k * 3 + 2]);
-        if (normals != null) {
-          normalMatrix.transformNormal(normals, v * 3, n);
-        } else {
-          n[0] = fnx;
-          n[1] = fny;
-          n[2] = fnz;
-        }
-        out.add(n[0]);
-        out.add(n[1]);
-        out.add(n[2]);
-        if (uvs != null) {
-          out.add(uvs[v * 2]);
-          out.add(uvs[v * 2 + 1]);
-        } else {
-          out.add(0);
-          out.add(0);
-        }
-
-        // Object-space tangent and bitangent sign.
+    if (normals != null) {
+      // Indexed: every source vertex is transformed once and the triangles
+      // reference it, instead of repeating it for each corner.
+      final base = group.vertexCount;
+      group.vertices.reserve(vertexCount * kFloatsPerVertex);
+      for (var v = 0; v < vertexCount; v++) {
+        world.transformPoint(positions, v * 3, p, 0);
+        normalMatrix.transformNormal(normals, v * 3, n);
         double tx = 0, ty = 0, tz = 0, w = 1;
         if (fileTangents != null) {
           tx = fileTangents[v * 4];
           ty = fileTangents[v * 4 + 1];
           tz = fileTangents[v * 4 + 2];
           w = fileTangents[v * 4 + 3] < 0 ? -1 : 1;
-        } else if (accT != null || hasTriTangent) {
-          final src = accT ?? triTB;
-          final o = accT != null ? v * 3 : 0;
-          final bsrc = accB ?? triTB;
-          final bo = accB != null ? v * 3 : 3;
-          tx = src[o];
-          ty = src[o + 1];
-          tz = src[o + 2];
-          // Object-space normal for the handedness test.
-          double nx, ny, nz;
-          if (normals != null) {
-            nx = normals[v * 3];
-            ny = normals[v * 3 + 1];
-            nz = normals[v * 3 + 2];
-          } else {
-            // Flat case: the face normal in object space.
-            final p = positions;
-            final a = indices[t] * 3,
-                b = indices[t + 1] * 3,
-                c = indices[t + 2] * 3;
-            final e1x = p[b] - p[a],
-                e1y = p[b + 1] - p[a + 1],
-                e1z = p[b + 2] - p[a + 2];
-            final e2x = p[c] - p[a],
-                e2y = p[c + 1] - p[a + 1],
-                e2z = p[c + 2] - p[a + 2];
-            nx = e1y * e2z - e1z * e2y;
-            ny = e1z * e2x - e1x * e2z;
-            nz = e1x * e2y - e1y * e2x;
-          }
-          final cx = ny * tz - nz * ty,
-              cy = nz * tx - nx * tz,
-              cz = nx * ty - ny * tx;
-          final d = cx * bsrc[bo] + cy * bsrc[bo + 1] + cz * bsrc[bo + 2];
-          // glTF UVs run top-down while the normal map's green points up, so
-          // the bitangent is along -v.
-          w = d < 0 ? 1 : -1;
+        } else if (accT != null) {
+          tx = accT[v * 3];
+          ty = accT[v * 3 + 1];
+          tz = accT[v * 3 + 2];
+          w = _bitangentSign(normals[v * 3], normals[v * 3 + 1],
+              normals[v * 3 + 2], tx, ty, tz, accB!, v * 3);
         }
-        if (flipWinding) w = -w;
-        world.transformDirection(tx, ty, tz, tan);
-        // Gram-Schmidt against the world normal; any perpendicular if degenerate.
-        final dn = tan[0] * n[0] + tan[1] * n[1] + tan[2] * n[2];
-        var ox = tan[0] - n[0] * dn,
-            oy = tan[1] - n[1] * dn,
-            oz = tan[2] - n[2] * dn;
-        var len = math.sqrt(ox * ox + oy * oy + oz * oz);
-        if (len < 1e-8) {
-          // cross(n, axis) with the axis least aligned to n.
-          if (n[0].abs() < 0.9) {
-            ox = 0;
-            oy = n[2];
-            oz = -n[1];
-          } else {
-            ox = -n[2];
-            oy = 0;
-            oz = n[0];
-          }
-          len = math.sqrt(ox * ox + oy * oy + oz * oz);
+        _addVertex(group.vertices, world, p, n, uvs, v, tx, ty, tz,
+            flipWinding ? -w : w);
+      }
+      group.indices.reserve(indices.length);
+      for (var t = 0; t + 2 < indices.length; t += 3) {
+        group.indices.add(base + indices[t]);
+        group.indices.add(base + indices[flipWinding ? t + 2 : t + 1]);
+        group.indices.add(base + indices[flipWinding ? t + 1 : t + 2]);
+      }
+      return;
+    }
+
+    // No normals: flat shading needs a separate vertex per triangle corner.
+    group.vertices.reserve(indices.length * kFloatsPerVertex);
+    group.indices.reserve(indices.length);
+    final tri = Float64List(9);
+    final order = Int32List(3);
+    for (var t = 0; t + 2 < indices.length; t += 3) {
+      order[0] = indices[t];
+      order[1] = indices[flipWinding ? t + 2 : t + 1];
+      order[2] = indices[flipWinding ? t + 1 : t + 2];
+      for (var k = 0; k < 3; k++) {
+        world.transformPoint(positions, order[k] * 3, tri, k * 3);
+      }
+
+      final ax = tri[3] - tri[0], ay = tri[4] - tri[1], az = tri[5] - tri[2];
+      final bx = tri[6] - tri[0], by = tri[7] - tri[1], bz = tri[8] - tri[2];
+      var fnx = ay * bz - az * by;
+      var fny = az * bx - ax * bz;
+      var fnz = ax * by - ay * bx;
+      final len = math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
+      if (len > 0) {
+        fnx /= len;
+        fny /= len;
+        fnz /= len;
+      } else {
+        fnz = 1;
+      }
+      n[0] = fnx;
+      n[1] = fny;
+      n[2] = fnz;
+
+      // Per-triangle tangent, in object space.
+      double tx = 0, ty = 0, tz = 0, w = 1;
+      if (fileTangents == null &&
+          uvs != null &&
+          _triangleTangent(positions, uvs, indices[t], indices[t + 1],
+              indices[t + 2], triTB)) {
+        tx = triTB[0];
+        ty = triTB[1];
+        tz = triTB[2];
+        // Object-space face normal for the handedness test.
+        final q = positions;
+        final a = indices[t] * 3,
+            b = indices[t + 1] * 3,
+            c = indices[t + 2] * 3;
+        final e1x = q[b] - q[a],
+            e1y = q[b + 1] - q[a + 1],
+            e1z = q[b + 2] - q[a + 2];
+        final e2x = q[c] - q[a],
+            e2y = q[c + 1] - q[a + 1],
+            e2z = q[c + 2] - q[a + 2];
+        w = _bitangentSign(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z,
+            e1x * e2y - e1y * e2x, tx, ty, tz, triTB, 3);
+      }
+      for (var k = 0; k < 3; k++) {
+        final v = order[k];
+        if (fileTangents != null) {
+          tx = fileTangents[v * 4];
+          ty = fileTangents[v * 4 + 1];
+          tz = fileTangents[v * 4 + 2];
+          w = fileTangents[v * 4 + 3] < 0 ? -1 : 1;
         }
-        out.add(ox / len);
-        out.add(oy / len);
-        out.add(oz / len);
-        out.add(w);
+        p[0] = tri[k * 3];
+        p[1] = tri[k * 3 + 1];
+        p[2] = tri[k * 3 + 2];
+        group.indices.add(group.vertexCount);
+        _addVertex(group.vertices, world, p, n, uvs, v, tx, ty, tz,
+            flipWinding ? -w : w);
       }
     }
+  }
+
+  /// Bitangent sign from an object-space normal, tangent and the bitangent
+  /// along +v at `b[bo..bo+2]`. glTF UVs run top-down while the normal map's
+  /// green points up, so the bitangent is along -v.
+  static double _bitangentSign(double nx, double ny, double nz, double tx,
+      double ty, double tz, Float64List b, int bo) {
+    final cx = ny * tz - nz * ty,
+        cy = nz * tx - nx * tz,
+        cz = nx * ty - ny * tx;
+    final d = cx * b[bo] + cy * b[bo + 1] + cz * b[bo + 2];
+    return d < 0 ? 1 : -1;
+  }
+
+  /// Appends one interleaved vertex. [p] and [n] are already in world space;
+  /// the object-space tangent is transformed and made perpendicular to [n].
+  static void _addVertex(
+      _Builder out,
+      _Mat4 world,
+      Float64List p,
+      Float64List n,
+      Float64List? uvs,
+      int v,
+      double tx,
+      double ty,
+      double tz,
+      double w) {
+    out.add(p[0]);
+    out.add(p[1]);
+    out.add(p[2]);
+    out.add(n[0]);
+    out.add(n[1]);
+    out.add(n[2]);
+    if (uvs != null) {
+      out.add(uvs[v * 2]);
+      out.add(uvs[v * 2 + 1]);
+    } else {
+      out.add(0);
+      out.add(0);
+    }
+    final m = world.m;
+    final t0 = m[0] * tx + m[4] * ty + m[8] * tz;
+    final t1 = m[1] * tx + m[5] * ty + m[9] * tz;
+    final t2 = m[2] * tx + m[6] * ty + m[10] * tz;
+    // Gram-Schmidt against the world normal; any perpendicular if degenerate.
+    final dn = t0 * n[0] + t1 * n[1] + t2 * n[2];
+    var ox = t0 - n[0] * dn, oy = t1 - n[1] * dn, oz = t2 - n[2] * dn;
+    var len = math.sqrt(ox * ox + oy * oy + oz * oz);
+    if (len < 1e-8) {
+      // cross(n, axis) with the axis least aligned to n.
+      if (n[0].abs() < 0.9) {
+        ox = 0;
+        oy = n[2];
+        oz = -n[1];
+      } else {
+        ox = -n[2];
+        oy = 0;
+        oz = n[0];
+      }
+      len = math.sqrt(ox * ox + oy * oy + oz * oz);
+    }
+    out.add(ox / len);
+    out.add(oy / len);
+    out.add(oz / len);
+    out.add(w);
   }
 
   /// Unnormalized tangent (along +u) and bitangent (along +v) of a triangle
@@ -839,6 +885,34 @@ class _Material {
   final String? name;
 }
 
+/// Geometry collected for one material.
+class _Group {
+  final _Builder vertices = _Builder();
+  final _IndexBuilder indices = _IndexBuilder();
+
+  int get vertexCount => vertices.length ~/ kFloatsPerVertex;
+}
+
+/// Growable uint32 buffer.
+class _IndexBuilder {
+  Uint32List _data = Uint32List(1024);
+  int length = 0;
+
+  void reserve(int extra) {
+    final need = length + extra;
+    if (need <= _data.length) return;
+    var cap = _data.length;
+    while (cap < need) {
+      cap *= 2;
+    }
+    _data = Uint32List(cap)..setRange(0, length, _data);
+  }
+
+  void add(int v) => _data[length++] = v;
+
+  Uint32List toList() => Uint32List(length)..setRange(0, length, _data);
+}
+
 /// Growable float buffer that avoids boxing.
 class _Builder {
   Float32List _data = Float32List(1024);
@@ -909,13 +983,6 @@ class _Mat4 {
     dst[o] = m[0] * x + m[4] * y + m[8] * z + m[12];
     dst[o + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
     dst[o + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
-  }
-
-  /// Upper 3x3 times a direction (no translation, not normalized).
-  void transformDirection(double x, double y, double z, Float64List dst) {
-    dst[0] = m[0] * x + m[4] * y + m[8] * z;
-    dst[1] = m[1] * x + m[5] * y + m[9] * z;
-    dst[2] = m[2] * x + m[6] * y + m[10] * z;
   }
 
   double determinant3() =>

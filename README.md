@@ -55,6 +55,32 @@ GlbView.asset(
 )
 ```
 
+### Instant loading (precache)
+
+Models are parsed once and uploaded to the GPU once, then shared by every
+`GlbView` and kept for later visits. Precache before navigating and the
+screen shows the model on its first frame or two:
+
+```dart
+@override
+void initState() {
+  super.initState();
+  GlbView.precacheAsset('assets/badge.glb'); // or precacheMemory(bytes)
+}
+```
+
+- `GlbView.maxUnusedModels` (default 4) bounds how many models no view is
+  showing stay on the GPU, least recently used evicted first.
+- `GlbView.evictAsset`, `GlbView.evictMemory` and `GlbView.clearCache` free
+  them explicitly.
+- `GlbView.debugTimings = true` logs each phase (read, parse, GPU upload,
+  first frame).
+
+Without precaching, the first open of a ~2 MB model (60k triangles, six
+1024² textures) takes about 300 ms on a mid-range Android phone; precached
+or repeat opens take about one frame. The shader compiles in the
+background when the plugin starts, so the first view doesn't pay for it.
+
 ### Material overrides
 
 Swap a material's textures or color at runtime, keyed by the glTF material

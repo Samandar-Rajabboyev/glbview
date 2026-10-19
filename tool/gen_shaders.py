@@ -5,8 +5,8 @@ The shading math is written once below in GLSL-flavoured code and translated
 mechanically to Metal, so both platforms stay identical. The results are
 written between the GENERATED SHADERS markers in
 
-  android/src/main/kotlin/dev/samandar/glbview/GlbRenderer.kt
-  ios/glbview/Sources/glbview/GlbRenderer.swift
+  android/src/main/kotlin/dev/samandar/glbview/GlbShaders.kt
+  ios/glbview/Sources/glbview/GlbShaders.swift
 
 Usage: python3 tool/gen_shaders.py   (from the plugin root)
 """
@@ -14,8 +14,8 @@ import os
 import re
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-KOTLIN = os.path.join(ROOT, "android/src/main/kotlin/dev/samandar/glbview/GlbRenderer.kt")
-SWIFT = os.path.join(ROOT, "ios/glbview/Sources/glbview/GlbRenderer.swift")
+KOTLIN = os.path.join(ROOT, "android/src/main/kotlin/dev/samandar/glbview/GlbShaders.kt")
+SWIFT = os.path.join(ROOT, "ios/glbview/Sources/glbview/GlbShaders.swift")
 
 # Shared helper functions. Only built-ins common to GLSL ES 1.00 and MSL; no
 # loops, no derivatives.
@@ -431,14 +431,14 @@ def main():
         assert "$" not in text and '"""' not in text and "\\" not in text
 
     kotlin = (
-        '        const val VERTEX_SHADER = """\n'
+        '    const val VERTEX_SHADER = """\n'
         + GLSL_VERTEX.strip("\n") + '\n"""\n\n'
-        + '        const val FRAGMENT_SHADER = """\n'
+        + '    const val FRAGMENT_SHADER = """\n'
         + glsl_fragment.strip("\n") + '\n"""\n'
     )
     replace_block(KOTLIN, kotlin)
 
-    swift = '  private static let shaderSource = """\n' + indent(msl, "    ") + '\n    """\n'
+    swift = '  static let metalSource = """\n' + indent(msl, "    ") + '\n    """\n'
     replace_block(SWIFT, swift)
     print("updated", os.path.relpath(KOTLIN, ROOT), "and", os.path.relpath(SWIFT, ROOT))
 

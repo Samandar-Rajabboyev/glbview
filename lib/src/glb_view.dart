@@ -1,9 +1,8 @@
-import 'dart:isolate';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'glb_cache.dart';
 import 'glb_channel.dart';
 import 'glb_material_override.dart';
 import 'glb_parser.dart';
@@ -40,7 +39,8 @@ class GlbView extends StatefulWidget {
     this.specularColor = const Color(0xFFFFFFFF),
     this.materialOverrides,
   })  : assetName = name,
-        bytes = null;
+        bytes = null,
+        cacheKey = null;
 
   /// Shows a GLB held in memory.
   const GlbView.memory(
@@ -64,6 +64,7 @@ class GlbView extends StatefulWidget {
     this.sparkle = 0.5,
     this.specularColor = const Color(0xFFFFFFFF),
     this.materialOverrides,
+    this.cacheKey,
   })  : assetName = null,
         package = null,
         bundle = null;
@@ -72,6 +73,11 @@ class GlbView extends StatefulWidget {
   final String? package;
   final AssetBundle? bundle;
   final Uint8List? bytes;
+
+  /// Identifies [bytes] in the model cache across different buffer objects
+  /// (e.g. a model downloaded again). Without it the cache entry is tied to
+  /// the buffer object itself. See [precacheMemory].
+  final String? cacheKey;
 
   /// Logical size of the view.
   final double width;
@@ -144,6 +150,53 @@ class GlbView extends StatefulWidget {
     );
   }
 
+  /// Logs per-phase load timings (read, parse, GPU upload, native view
+  /// creation, first frame) to the console. For profiling; off by default.
+  static bool get debugTimings => GlbCache.debugTimings;
+  static set debugTimings(bool value) => GlbCache.debugTimings = value;
+
+  /// Parses the asset and uploads it to the GPU ahead of time, so a
+  /// [GlbView.asset] showing it later appears without a loading phase. Call
+  /// it before navigating to the screen, e.g. in `initState` of the
+  /// previous one. Completes when the model is ready to draw.
+  static Future<void> precacheAsset(
+    String name, {
+    String? package,
+    AssetBundle? bundle,
+  }) {
+    final key = GlbCache.assetKey(name, package);
+    return GlbCache.load(
+      key,
+      () => GlbCache.readAsset(bundle ?? rootBundle, key.substring(6)),
+    );
+  }
+
+  /// Like [precacheAsset] for a model held in memory. Pass the same [bytes]
+  /// object (or the same [cacheKey]) to [GlbView.memory] later.
+  static Future<void> precacheMemory(Uint8List bytes, {String? cacheKey}) {
+    return GlbCache.load(
+      GlbCache.memoryKey(bytes, cacheKey),
+      () async => bytes,
+    );
+  }
+
+  /// Removes a precached or previously shown asset from the cache. Models a
+  /// mounted view is showing stay until that view is gone.
+  static void evictAsset(String name, {String? package}) =>
+      GlbCache.evict(GlbCache.assetKey(name, package));
+
+  /// Removes a memory model from the cache (see [precacheMemory]).
+  static void evictMemory(Uint8List bytes, {String? cacheKey}) =>
+      GlbCache.evict(GlbCache.memoryKey(bytes, cacheKey));
+
+  /// Evicts every cached model that no mounted view is showing.
+  static void clearCache() => GlbCache.clear();
+
+  /// How many models no view is showing stay cached on the GPU (least
+  /// recently used are evicted first). Models in use don't count.
+  static int get maxUnusedModels => GlbCache.maxUnusedModels;
+  static set maxUnusedModels(int value) => GlbCache.maxUnusedModels = value;
+
   static const double minPitch = -85;
   static const double maxPitch = 85;
   static const double minDistance = 1.6;
@@ -158,14 +211,19 @@ class _GlbViewState extends State<GlbView> {
   bool _ready = false;
   Object? _error;
 
+  /// The model was already cached when loading started: skip the
+  /// placeholder, which would only flash for a frame or two.
+  bool _instant = false;
+
   /// Bumped whenever an in-flight load becomes obsolete.
   int _generation = 0;
   double? _devicePixelRatio;
 
-  /// Parsed model, reused when only the texture needs recreating.
-  Future<GlbModel>? _model;
+  /// Cache key of the model this view holds a reference on.
+  String? _heldKey;
+  GlbModelInfo? _info;
 
-  /// Overrides in the last model upload, and whether a re-upload is running.
+  /// Overrides last sent to the native view, and whether a send is running.
   Map<String, GlbMaterialOverride>? _sentOverrides;
   bool _overridesBusy = false;
 
@@ -178,6 +236,10 @@ class _GlbViewState extends State<GlbView> {
 
   bool _cameraBusy = false;
   bool _cameraDirty = false;
+
+  String get _key => widget.bytes != null
+      ? GlbCache.memoryKey(widget.bytes!, widget.cacheKey)
+      : GlbCache.assetKey(widget.assetName!, widget.package);
 
   @override
   void didChangeDependencies() {
@@ -196,8 +258,8 @@ class _GlbViewState extends State<GlbView> {
     final sourceChanged = old.assetName != widget.assetName ||
         old.package != widget.package ||
         old.bundle != widget.bundle ||
+        old.cacheKey != widget.cacheKey ||
         !identical(old.bytes, widget.bytes);
-    if (sourceChanged) _model = null;
     if (sourceChanged ||
         old.width != widget.width ||
         old.height != widget.height ||
@@ -216,6 +278,7 @@ class _GlbViewState extends State<GlbView> {
   void dispose() {
     _generation++;
     _releaseTexture();
+    _releaseModel();
     super.dispose();
   }
 
@@ -227,57 +290,81 @@ class _GlbViewState extends State<GlbView> {
     }
   }
 
+  void _releaseModel() {
+    final key = _heldKey;
+    _heldKey = null;
+    _info = null;
+    if (key != null) GlbCache.release(key);
+  }
+
   /// Throws away the current texture and builds a new one. Called from
   /// lifecycle methods, so state is mutated directly (a build follows).
   void _recreate() {
     final gen = ++_generation;
     _releaseTexture();
+    _releaseModel();
     _ready = false;
     _error = null;
     _cameraBusy = false;
     _cameraDirty = false;
     _sentOverrides = null;
     _overridesBusy = false;
-    _load(gen);
+    final key = _key;
+    _instant = GlbCache.isReady(key);
+    // Hold the model from the start so the cache can't evict it mid-load.
+    _heldKey = key;
+    final infoFuture = GlbCache.load(key, _bytesLoader());
+    GlbCache.acquire(key);
+    _load(gen, key, infoFuture);
   }
 
-  Future<void> _load(int gen) async {
+  /// Captures what reading the source needs now, while `context` is valid.
+  Future<Uint8List> Function() _bytesLoader() {
+    final bytes = widget.bytes;
+    if (bytes != null) return () async => bytes;
+    final bundle = widget.bundle ?? DefaultAssetBundle.of(context);
+    final assetKey = GlbCache.assetKey(widget.assetName!, widget.package);
+    return () => GlbCache.readAsset(bundle, assetKey.substring(6));
+  }
+
+  Future<void> _load(
+      int gen, String key, Future<GlbModelInfo> infoFuture) async {
     final dpr = _devicePixelRatio ?? 1;
-    final modelFuture = _model ??= _parse();
     // Errors are handled when awaited below; don't report them as unhandled
-    // while the texture is still being created.
-    modelFuture.ignore();
+    // while the native view is still being created.
+    infoFuture.ignore();
+    final sw = Stopwatch()..start();
     try {
       final id = await GlbChannel.create(
         width: (widget.width * dpr).round().clamp(1, 4096),
         height: (widget.height * dpr).round().clamp(1, 4096),
         autoRotate: widget.autoRotate ? widget.autoRotateDegreesPerSecond : 0,
+        debugTimings: GlbView.debugTimings,
       );
       if (gen != _generation || !mounted) {
         GlbChannel.dispose(id).catchError((Object _) {});
         return;
       }
       setState(() => _textureId = id);
+      final created = sw.elapsedMilliseconds;
 
-      final GlbModel model;
-      try {
-        model = await modelFuture;
-      } catch (_) {
-        if (identical(_model, modelFuture)) _model = null; // allow retry
-        rethrow;
-      }
+      final info = await infoFuture;
       if (gen != _generation || !mounted) return;
+      _info = info;
+      final cached = sw.elapsedMilliseconds;
       await GlbChannel.setCamera(id,
           yaw: _yaw, pitch: _pitch, distance: _distance);
-      // Style goes before the model (so the first frame is right) and again
-      // after it, in case the widget changed while the upload was running.
       await GlbChannel.setStyle(id, widget.style);
-      await _uploadModel(id, model);
+      await _sendOverrides(id, info);
+      await GlbChannel.setModel(id, key);
       if (gen != _generation || !mounted) return;
-      await GlbChannel.setStyle(id, widget.style);
-      if (gen != _generation || !mounted) return;
+      if (GlbView.debugTimings) {
+        debugPrint('GlbView timing [$key]: view created ${created}ms, '
+            'model ready ${cached}ms, attached ${sw.elapsedMilliseconds}ms '
+            '(${_instant ? 'cached' : 'cold'})');
+      }
       setState(() => _ready = true);
-      // Overrides may have changed while the first upload was running.
+      // Overrides may have changed while loading.
       _syncOverrides();
     } catch (e, st) {
       if (gen != _generation || !mounted) return;
@@ -286,28 +373,53 @@ class _GlbViewState extends State<GlbView> {
     }
   }
 
-  Future<void> _uploadModel(int id, GlbModel model) {
+  /// Sends the current overrides, resolved from material names to the
+  /// model's primitive indices.
+  Future<void> _sendOverrides(int id, GlbModelInfo info) {
     final overrides = widget.materialOverrides;
     _sentOverrides = overrides;
-    return GlbChannel.loadModel(id, model.withMaterialOverrides(overrides));
+    final list = <Map<String, Object?>>[];
+    if (overrides != null) {
+      assert(() {
+        final unknown =
+            overrides.keys.where((k) => !info.materialNames.contains(k));
+        if (unknown.isNotEmpty) {
+          debugPrint('GlbView: no material named ${unknown.join(', ')}; '
+              'this model has ${info.materialNames.whereType<String>().join(', ')}');
+        }
+        return true;
+      }());
+      for (var i = 0; i < info.materialNames.length; i++) {
+        final o = overrides[info.materialNames[i]];
+        if (o == null) continue;
+        list.add({
+          'index': i,
+          'texture': o.baseColorTexture,
+          'normalTexture': o.normalTexture,
+          'metallicRoughnessTexture': o.metallicRoughnessTexture,
+          'baseColor': o.baseColor == null ? null : linearFactor(o.baseColor!),
+        });
+      }
+    }
+    return GlbChannel.setOverrides(id, list);
   }
 
-  /// Re-uploads the cached model when the overrides differ from the last
-  /// upload. Serialized, and loops until the latest overrides are sent.
+  /// Re-sends overrides when they differ from the last send. Serialized,
+  /// and loops until the latest overrides are applied.
   Future<void> _syncOverrides() async {
     final id = _textureId;
-    final modelFuture = _model;
+    final info = _info;
     if (!_ready ||
         _overridesBusy ||
         id == null ||
-        modelFuture == null ||
+        info == null ||
         mapEquals(_sentOverrides, widget.materialOverrides)) {
       return;
     }
     final gen = _generation;
     _overridesBusy = true;
     try {
-      await _uploadModel(id, await modelFuture);
+      await _sendOverrides(id, info);
     } catch (e, st) {
       if (gen != _generation || !mounted) return;
       debugPrint('GlbView: failed to apply material overrides: $e\n$st');
@@ -319,24 +431,11 @@ class _GlbViewState extends State<GlbView> {
     if (gen == _generation && mounted) _syncOverrides();
   }
 
-  Future<GlbModel> _parse() async {
-    final Uint8List bytes;
-    if (widget.bytes != null) {
-      bytes = widget.bytes!;
-    } else {
-      final bundle = widget.bundle ?? DefaultAssetBundle.of(context);
-      final key = widget.package == null
-          ? widget.assetName!
-          : 'packages/${widget.package}/${widget.assetName}';
-      final data = await bundle.load(key);
-      bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-    }
-    return _parseInIsolate(bytes);
+  void _pushStyle() {
+    final id = _textureId;
+    if (id == null) return;
+    GlbChannel.setStyle(id, widget.style).catchError((Object _) {});
   }
-
-  // Static so the isolate closure can't capture this State.
-  static Future<GlbModel> _parseInIsolate(Uint8List bytes) =>
-      Isolate.run(() => parseGlb(bytes), debugName: 'glb_parse');
 
   void _pushCamera() {
     final id = _textureId;
@@ -356,12 +455,6 @@ class _GlbViewState extends State<GlbView> {
         _pushCamera();
       }
     });
-  }
-
-  void _pushStyle() {
-    final id = _textureId;
-    if (id == null) return;
-    GlbChannel.setStyle(id, widget.style).catchError((Object _) {});
   }
 
   void _onScaleStart(ScaleStartDetails details) {
@@ -392,7 +485,7 @@ class _GlbViewState extends State<GlbView> {
         if (id != null && error == null) Texture(textureId: id),
         if (error != null)
           widget.errorBuilder?.call(context, error) ?? _DefaultError(error)
-        else if (!_ready)
+        else if (!_ready && !_instant)
           widget.placeholder ??
               const Center(
                 child: SizedBox.square(

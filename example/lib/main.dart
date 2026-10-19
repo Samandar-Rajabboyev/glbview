@@ -6,7 +6,11 @@ import 'package:glbview/glbview.dart';
 import 'style_page.dart';
 import 'tier_texture.dart';
 
-void main() => runApp(const GlbViewExampleApp());
+void main() {
+  // flutter run --profile --dart-define=GLB_TIMINGS=true
+  GlbView.debugTimings = const bool.fromEnvironment('GLB_TIMINGS');
+  runApp(const GlbViewExampleApp());
+}
 
 class GlbViewExampleApp extends StatelessWidget {
   const GlbViewExampleApp({super.key});
@@ -43,6 +47,18 @@ class _ViewerPageState extends State<ViewerPage> {
   bool _autoRotate = true;
   double _speed = 20;
   CubeFace _face = CubeFace.file;
+
+  @override
+  void initState() {
+    super.initState();
+    // Warm the cache after the first frame so opening other models is
+    // instant. The badge is a private local file and may be missing.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      GlbView.precacheAsset('assets/star.glb');
+      GlbView.precacheAsset('assets/local/yia_top1_badge.glb')
+          .catchError((Object _) {});
+    });
+  }
 
   /// Generated textures, cached so the override bytes stay identical across
   /// rebuilds (a new buffer would re-upload the model).
