@@ -24,7 +24,7 @@ GlbView.asset(
   height: 300,
   autoRotate: true,
   autoRotateDegreesPerSecond: 20,
-  interactive: true,          // drag = orbit, pinch = zoom
+  gestures: GlbGesture.all,   // any set of rotate / tilt / zoom
   initialYaw: 0,
   initialPitch: 10,
   initialDistance: 3.2,
@@ -53,6 +53,22 @@ GlbView.asset(
   sparkle: 0.5,
   specularColor: Colors.white,
 )
+```
+
+### Gestures
+
+`gestures` takes any combination of `GlbGesture.rotate` (horizontal drag,
+yaw), `GlbGesture.tilt` (vertical drag, pitch) and `GlbGesture.zoom` (pinch).
+Presets: `GlbGesture.all` (default), `GlbGesture.orbit` (rotate + tilt) and
+`GlbGesture.none`.
+
+The view uses the narrowest gesture recognizer for the set, so drags it
+doesn't handle reach ancestors: with `{GlbGesture.rotate}` a vertical
+`ListView` still scrolls when the drag starts on the model. Zoom needs a
+scale recognizer, which also takes vertical drags.
+
+```dart
+GlbView.asset('assets/badge.glb', gestures: {GlbGesture.rotate});
 ```
 
 ### Instant loading (precache)

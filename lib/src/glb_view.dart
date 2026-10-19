@@ -8,6 +8,28 @@ import 'glb_material_override.dart';
 import 'glb_parser.dart';
 import 'glb_style.dart';
 
+/// Touch gestures a [GlbView] responds to. Combine them in a set, e.g.
+/// `gestures: {GlbGesture.rotate, GlbGesture.zoom}`.
+enum GlbGesture {
+  /// Horizontal drag turns the model around its vertical axis (yaw).
+  rotate,
+
+  /// Vertical drag tilts the model (pitch, clamped to ±85°).
+  tilt,
+
+  /// Pinch zooms (camera distance 1.6..10).
+  zoom;
+
+  /// Every gesture (the default).
+  static const Set<GlbGesture> all = {rotate, tilt, zoom};
+
+  /// Drag in any direction to orbit, no zoom.
+  static const Set<GlbGesture> orbit = {rotate, tilt};
+
+  /// Not interactive.
+  static const Set<GlbGesture> none = {};
+}
+
 /// Builds a widget shown when loading or rendering the model failed.
 typedef GlbErrorBuilder = Widget Function(BuildContext context, Object error);
 
@@ -24,6 +46,8 @@ class GlbView extends StatefulWidget {
     this.height = 300,
     this.autoRotate = true,
     this.autoRotateDegreesPerSecond = 20,
+    this.gestures = GlbGesture.all,
+    @Deprecated('Use gestures; interactive: false equals GlbGesture.none')
     this.interactive = true,
     this.initialYaw = 0,
     this.initialPitch = 10,
@@ -50,6 +74,8 @@ class GlbView extends StatefulWidget {
     this.height = 300,
     this.autoRotate = true,
     this.autoRotateDegreesPerSecond = 20,
+    this.gestures = GlbGesture.all,
+    @Deprecated('Use gestures; interactive: false equals GlbGesture.none')
     this.interactive = true,
     this.initialYaw = 0,
     this.initialPitch = 10,
@@ -86,7 +112,15 @@ class GlbView extends StatefulWidget {
   final bool autoRotate;
   final double autoRotateDegreesPerSecond;
 
-  /// Whether drag-to-orbit and pinch-to-zoom are enabled.
+  /// Which touch gestures move the camera; any combination of
+  /// [GlbGesture]s. Gestures not in the set pass through to ancestors, so
+  /// e.g. `{GlbGesture.rotate}` (horizontal drags only) keeps a vertical
+  /// scroll view scrollable over the model. Including [GlbGesture.zoom]
+  /// needs a scale recognizer, which also claims vertical drags.
+  final Set<GlbGesture> gestures;
+
+  /// Whether the view reacts to touch at all.
+  @Deprecated('Use gestures; interactive: false equals GlbGesture.none')
   final bool interactive;
 
   /// Initial camera, in degrees, degrees and model radii.
@@ -457,22 +491,39 @@ class _GlbViewState extends State<GlbView> {
     });
   }
 
+  Set<GlbGesture> get _gestures =>
+      // ignore: deprecated_member_use_from_same_package
+      widget.interactive ? widget.gestures : GlbGesture.none;
+
+  static const double _degreesPerPixel = 0.4;
+
+  /// Applies a one-finger drag, honoring which of rotate/tilt are enabled.
+  void _drag(Offset delta) {
+    final gestures = _gestures;
+    if (gestures.contains(GlbGesture.rotate)) {
+      _yaw += delta.dx * _degreesPerPixel;
+    }
+    if (gestures.contains(GlbGesture.tilt)) {
+      _pitch = (_pitch + delta.dy * _degreesPerPixel)
+          .clamp(GlbView.minPitch, GlbView.maxPitch);
+    }
+    _pushCamera();
+  }
+
   void _onScaleStart(ScaleStartDetails details) {
     _scaleStartDistance = _distance;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
     if (details.pointerCount >= 2) {
+      // Only reached when zoom is enabled (the scale recognizer is used).
       if (details.scale <= 0) return;
       _distance = (_scaleStartDistance / details.scale)
           .clamp(GlbView.minDistance, GlbView.maxDistance);
+      _pushCamera();
     } else {
-      const degreesPerPixel = 0.4;
-      _yaw += details.focalPointDelta.dx * degreesPerPixel;
-      _pitch = (_pitch + details.focalPointDelta.dy * degreesPerPixel)
-          .clamp(GlbView.minPitch, GlbView.maxPitch);
+      _drag(details.focalPointDelta);
     }
-    _pushCamera();
   }
 
   @override
@@ -495,13 +546,36 @@ class _GlbViewState extends State<GlbView> {
               ),
       ],
     );
-    if (widget.interactive && error == null) {
-      child = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onScaleStart: _onScaleStart,
-        onScaleUpdate: _onScaleUpdate,
-        child: child,
-      );
+    final gestures = _gestures;
+    if (gestures.isNotEmpty && error == null) {
+      // The narrowest recognizer that covers the enabled gestures, so the
+      // rest stay available to ancestors (e.g. a vertical scroll view).
+      final rotate = gestures.contains(GlbGesture.rotate);
+      final tilt = gestures.contains(GlbGesture.tilt);
+      child = gestures.contains(GlbGesture.zoom)
+          ? GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onScaleStart: _onScaleStart,
+              onScaleUpdate: _onScaleUpdate,
+              child: child,
+            )
+          : rotate && tilt
+              ? GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (d) => _drag(d.delta),
+                  child: child,
+                )
+              : rotate
+                  ? GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragUpdate: (d) => _drag(d.delta),
+                      child: child,
+                    )
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onVerticalDragUpdate: (d) => _drag(d.delta),
+                      child: child,
+                    );
     }
     return SizedBox(width: widget.width, height: widget.height, child: child);
   }

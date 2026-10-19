@@ -47,6 +47,7 @@ class _ViewerPageState extends State<ViewerPage> {
   bool _autoRotate = true;
   double _speed = 20;
   CubeFace _face = CubeFace.file;
+  Set<GlbGesture> _gestures = GlbGesture.all;
 
   @override
   void initState() {
@@ -99,6 +100,7 @@ class _ViewerPageState extends State<ViewerPage> {
         autoRotate: _autoRotate,
         autoRotateDegreesPerSecond: _speed,
         initialPitch: 20,
+        gestures: _gestures,
         placeholder: const _Placeholder(),
         // 'checker' is the cube's material name in the GLB.
         materialOverrides: _face == CubeFace.file
@@ -117,6 +119,7 @@ class _ViewerPageState extends State<ViewerPage> {
         autoRotate: _autoRotate,
         autoRotateDegreesPerSecond: _speed,
         initialPitch: 0,
+        gestures: _gestures,
         initialDistance: 3,
         placeholder: const _Placeholder(),
       ),
@@ -128,6 +131,7 @@ class _ViewerPageState extends State<ViewerPage> {
         autoRotate: _autoRotate,
         autoRotateDegreesPerSecond: _speed,
         initialPitch: 0,
+        gestures: _gestures,
         placeholder: const _Placeholder(),
       ),
       Sample.broken => GlbView.memory(
@@ -202,6 +206,29 @@ class _ViewerPageState extends State<ViewerPage> {
               onSelectionChanged: (s) => _selectFace(s.first),
             ),
           ],
+          const SizedBox(height: 8),
+          // Try rotate only: vertical drags over the model then scroll the
+          // page instead of tilting it.
+          Wrap(
+            spacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final g in GlbGesture.values)
+                FilterChip(
+                  label: Text(switch (g) {
+                    GlbGesture.rotate => 'Rotate',
+                    GlbGesture.tilt => 'Tilt',
+                    GlbGesture.zoom => 'Zoom',
+                  }),
+                  selected: _gestures.contains(g),
+                  onSelected: (on) => setState(
+                    () => _gestures = on
+                        ? {..._gestures, g}
+                        : (_gestures.toSet()..remove(g)),
+                  ),
+                ),
+            ],
+          ),
           SwitchListTile(
             title: const Text('Auto-rotate'),
             value: _autoRotate,

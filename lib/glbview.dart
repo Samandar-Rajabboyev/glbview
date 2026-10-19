@@ -9,4 +9,4 @@ export 'src/glb_parser.dart'
     show GlbFormatException, GlbModel, GlbPrimitive, kFloatsPerVertex, parseGlb;
 export 'src/glb_material_override.dart'
     show GlbMaterialOverride, GlbModelOverrides;
-export 'src/glb_view.dart' show GlbErrorBuilder, GlbView;
+export 'src/glb_view.dart' show GlbErrorBuilder, GlbGesture, GlbView;

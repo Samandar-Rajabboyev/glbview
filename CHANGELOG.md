@@ -1,3 +1,12 @@
+## 0.3.1
+
+* `gestures`: any combination of `GlbGesture.rotate`, `GlbGesture.tilt` and
+  `GlbGesture.zoom` (presets `all`, `orbit`, `none`). The view picks the
+  narrowest recognizer, so e.g. a rotate-only view inside a vertical
+  `ListView` lets the list scroll.
+* `interactive` is deprecated; `interactive: false` equals
+  `gestures: GlbGesture.none`.
+
 ## 0.3.0
 
 * Precaching: `GlbView.precacheAsset` / `GlbView.precacheMemory` parse and
