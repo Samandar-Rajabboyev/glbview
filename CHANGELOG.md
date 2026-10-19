@@ -1,3 +1,10 @@
+## 0.3.2
+
+* Fix: a second finger on the view (e.g. an attempted pinch) made rotate
+  and tilt jump, most visibly on iOS where drag deltas average all fingers.
+  Rotate/tilt now follow a single finger only; with `GlbGesture.zoom` two
+  fingers zoom as before.
+
 ## 0.3.1
 
 * `gestures`: any combination of `GlbGesture.rotate`, `GlbGesture.tilt` and

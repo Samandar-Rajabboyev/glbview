@@ -497,8 +497,29 @@ class _GlbViewState extends State<GlbView> {
 
   static const double _degreesPerPixel = 0.4;
 
+  /// Fingers currently down on the view. Drag recognizers combine several
+  /// fingers into one delta (on iOS they average them), so a second finger,
+  /// e.g. an attempted pinch, would turn into sudden rotation/tilt jumps.
+  int _pointers = 0;
+
+  /// The first drag delta after going back to one finger still contains the
+  /// jump from the multi-finger position; it is dropped.
+  bool _skipNextDrag = false;
+
+  void _onPointerDown(PointerDownEvent _) => _pointers++;
+
+  void _onPointerUp(PointerEvent _) {
+    if (_pointers > 1) _skipNextDrag = true;
+    _pointers = _pointers > 0 ? _pointers - 1 : 0;
+  }
+
   /// Applies a one-finger drag, honoring which of rotate/tilt are enabled.
   void _drag(Offset delta) {
+    if (_pointers > 1) return;
+    if (_skipNextDrag) {
+      _skipNextDrag = false;
+      return;
+    }
     final gestures = _gestures;
     if (gestures.contains(GlbGesture.rotate)) {
       _yaw += delta.dx * _degreesPerPixel;
@@ -576,6 +597,12 @@ class _GlbViewState extends State<GlbView> {
                       onVerticalDragUpdate: (d) => _drag(d.delta),
                       child: child,
                     );
+      child = Listener(
+        onPointerDown: _onPointerDown,
+        onPointerUp: _onPointerUp,
+        onPointerCancel: _onPointerUp,
+        child: child,
+      );
     }
     return SizedBox(width: widget.width, height: widget.height, child: child);
   }

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -77,6 +78,88 @@ void main() {
     await pumpView(tester, view(GlbGesture.none, 'n'));
     await drag(tester, const Offset(100, 100));
     expect(cameras, isEmpty);
+  });
+
+  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+    testWidgets('a two-finger pinch does not rotate or tilt ($platform)',
+        (tester) async {
+      debugDefaultTargetPlatformOverride = platform;
+      try {
+        for (final gestures in [
+          GlbGesture.orbit,
+          {GlbGesture.rotate},
+          {GlbGesture.tilt},
+        ]) {
+          await pumpView(tester, view(gestures, 'pinch-$platform-$gestures'));
+          final center = tester.getCenter(find.byType(GlbView));
+          final a = await tester.startGesture(center - const Offset(20, 20));
+          final b = await tester.startGesture(center + const Offset(20, 20),
+              pointer: 2);
+          for (var i = 0; i < 10; i++) {
+            await a.moveBy(const Offset(-8, -8));
+            await b.moveBy(const Offset(8, 8));
+            await tester.pump(const Duration(milliseconds: 16));
+          }
+          await a.up();
+          await b.up();
+          await tester.pumpAndSettle();
+          for (final c in cameras) {
+            expect(c['yaw'], 0, reason: '$gestures yaw');
+            expect(c['pitch'], 0, reason: '$gestures pitch');
+          }
+        }
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  }
+
+  testWidgets('lifting one of two fingers resumes the drag without a jump',
+      (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      await pumpView(tester, view(GlbGesture.orbit, 'lift'));
+      final center = tester.getCenter(find.byType(GlbView));
+      final a = await tester.startGesture(center - const Offset(60, 0));
+      final b =
+          await tester.startGesture(center + const Offset(60, 0), pointer: 2);
+      await a.moveBy(const Offset(-30, 0));
+      await b.moveBy(const Offset(30, 0));
+      await tester.pump();
+      await b.up();
+      // One finger keeps going: 10 steps of 5 px to the right.
+      for (var i = 0; i < 10; i++) {
+        await a.moveBy(const Offset(5, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await a.up();
+      await tester.pumpAndSettle();
+      // At most 50 px of drag at 0.4°/px; a jump would add the 60+ px gap.
+      final yaw = cameras.last['yaw']! as double;
+      expect(yaw, inInclusiveRange(0, 20));
+      expect(cameras.last['pitch'], 0);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('with zoom enabled a pinch zooms and does not orbit',
+      (tester) async {
+    await pumpView(tester, view(GlbGesture.all, 'zoom'));
+    final center = tester.getCenter(find.byType(GlbView));
+    final a = await tester.startGesture(center - const Offset(20, 0));
+    final b =
+        await tester.startGesture(center + const Offset(20, 0), pointer: 2);
+    for (var i = 0; i < 10; i++) {
+      await a.moveBy(const Offset(-6, 0));
+      await b.moveBy(const Offset(6, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await a.up();
+    await b.up();
+    await tester.pumpAndSettle();
+    expect(cameras.last['distance'], lessThan(3.2));
+    expect(cameras.every((c) => c['yaw'] == 0 && c['pitch'] == 0), isTrue);
   });
 
   testWidgets('rotate-only view lets a vertical list scroll', (tester) async {
