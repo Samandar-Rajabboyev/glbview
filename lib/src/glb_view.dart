@@ -497,29 +497,44 @@ class _GlbViewState extends State<GlbView> {
 
   static const double _degreesPerPixel = 0.4;
 
-  /// Fingers currently down on the view. Drag recognizers combine several
-  /// fingers into one delta (on iOS they average them), so a second finger,
-  /// e.g. an attempted pinch, would turn into sudden rotation/tilt jumps.
-  int _pointers = 0;
+  /// Fingers currently down on the view, with their last local position.
+  final Map<int, Offset> _pointers = {};
 
-  /// The first drag delta after going back to one finger still contains the
-  /// jump from the multi-finger position; it is dropped.
-  bool _skipNextDrag = false;
+  /// True while one of the recognizers has won a drag/scale gesture.
+  ///
+  /// Recognizers only decide *when* the view handles a gesture (and compete
+  /// with scroll views for it). The movement itself comes from each pointer's
+  /// own move events: drag recognizers' deltas can't be trusted here. On iOS
+  /// the pan recognizer reported a delta relative to a previous gesture on
+  /// the first move of a new drag (snapping the model back), and drag
+  /// recognizers fold several fingers into one delta. Event deltas aren't
+  /// used either: on iOS the first move of a new touch carried a delta from
+  /// the previous touch's last position. Movement is the difference between
+  /// a pointer's own positions.
+  bool _dragging = false;
 
-  void _onPointerDown(PointerDownEvent _) => _pointers++;
+  void _onPointerDown(PointerDownEvent e) =>
+      _pointers[e.pointer] = e.localPosition;
 
-  void _onPointerUp(PointerEvent _) {
-    if (_pointers > 1) _skipNextDrag = true;
-    _pointers = _pointers > 0 ? _pointers - 1 : 0;
+  void _onPointerUp(PointerEvent e) => _pointers.remove(e.pointer);
+
+  /// Widget listeners see a move before the recognizers do (those are fed by
+  /// the gesture binding afterwards), so the move that makes a recognizer
+  /// win is not applied: the touch slop is skipped instead of being caught
+  /// up in one jump.
+  void _onPointerMove(PointerMoveEvent e) {
+    final last = _pointers[e.pointer];
+    _pointers[e.pointer] = e.localPosition;
+    if (last == null || !_dragging || _pointers.length != 1) return;
+    _drag(e.localPosition - last);
   }
+
+  void _dragStart() => _dragging = true;
+
+  void _dragEnd() => _dragging = false;
 
   /// Applies a one-finger drag, honoring which of rotate/tilt are enabled.
   void _drag(Offset delta) {
-    if (_pointers > 1) return;
-    if (_skipNextDrag) {
-      _skipNextDrag = false;
-      return;
-    }
     final gestures = _gestures;
     if (gestures.contains(GlbGesture.rotate)) {
       _yaw += delta.dx * _degreesPerPixel;
@@ -533,6 +548,7 @@ class _GlbViewState extends State<GlbView> {
 
   void _onScaleStart(ScaleStartDetails details) {
     _scaleStartDistance = _distance;
+    _dragStart();
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
@@ -542,9 +558,8 @@ class _GlbViewState extends State<GlbView> {
       _distance = (_scaleStartDistance / details.scale)
           .clamp(GlbView.minDistance, GlbView.maxDistance);
       _pushCamera();
-    } else {
-      _drag(details.focalPointDelta);
     }
+    // One-finger rotate/tilt is applied from pointer moves.
   }
 
   @override
@@ -578,27 +593,35 @@ class _GlbViewState extends State<GlbView> {
               behavior: HitTestBehavior.opaque,
               onScaleStart: _onScaleStart,
               onScaleUpdate: _onScaleUpdate,
+              onScaleEnd: (_) => _dragEnd(),
               child: child,
             )
           : rotate && tilt
               ? GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onPanUpdate: (d) => _drag(d.delta),
+                  onPanStart: (_) => _dragStart(),
+                  onPanEnd: (_) => _dragEnd(),
+                  onPanCancel: _dragEnd,
                   child: child,
                 )
               : rotate
                   ? GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onHorizontalDragUpdate: (d) => _drag(d.delta),
+                      onHorizontalDragStart: (_) => _dragStart(),
+                      onHorizontalDragEnd: (_) => _dragEnd(),
+                      onHorizontalDragCancel: _dragEnd,
                       child: child,
                     )
                   : GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onVerticalDragUpdate: (d) => _drag(d.delta),
+                      onVerticalDragStart: (_) => _dragStart(),
+                      onVerticalDragEnd: (_) => _dragEnd(),
+                      onVerticalDragCancel: _dragEnd,
                       child: child,
                     );
       child = Listener(
         onPointerDown: _onPointerDown,
+        onPointerMove: _onPointerMove,
         onPointerUp: _onPointerUp,
         onPointerCancel: _onPointerUp,
         child: child,

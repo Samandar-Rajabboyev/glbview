@@ -1,3 +1,12 @@
+## 0.3.3
+
+* Fix: rotate/tilt snapped back at the start of a new drag on iOS when
+  using `GlbGesture.orbit` or a single drag gesture (since 0.3.1). The
+  first move event of a new touch can carry a delta measured from the
+  previous touch, and drag recognizers sum event deltas. Rotation and
+  tilt now come from each finger's own successive positions; recognizers
+  only decide when a drag is active.
+
 ## 0.3.2
 
 * Fix: a second finger on the view (e.g. an attempted pinch) made rotate

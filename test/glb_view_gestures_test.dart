@@ -162,6 +162,82 @@ void main() {
     expect(cameras.every((c) => c['yaw'] == 0 && c['pitch'] == 0), isTrue);
   });
 
+  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+    for (final gestures in [
+      GlbGesture.all,
+      GlbGesture.orbit,
+      {GlbGesture.rotate},
+    ]) {
+      testWidgets('consecutive drags never jump ($platform, $gestures)',
+          (tester) async {
+        debugDefaultTargetPlatformOverride = platform;
+        try {
+          await pumpView(tester, view(gestures, 'seq-$platform-$gestures'));
+          final center = tester.getCenter(find.byType(GlbView));
+          // Three drags, each starting where the previous one did, like a
+          // user swiping the badge again and again.
+          for (var d = 0; d < 3; d++) {
+            final g = await tester.startGesture(center - const Offset(60, 0));
+            for (var i = 0; i < 12; i++) {
+              await g.moveBy(Offset(d.isEven ? 10 : -10, 0));
+              await tester.pump(const Duration(milliseconds: 16));
+            }
+            await g.up();
+            await tester.pumpAndSettle();
+          }
+          // 10 px per step at 0.4°/px is 4°; allow slop catch-up but no
+          // jump back across previous drags.
+          for (var i = 1; i < cameras.length; i++) {
+            final step = ((cameras[i]['yaw']! as double) -
+                    (cameras[i - 1]['yaw']! as double))
+                .abs();
+            expect(step, lessThanOrEqualTo(8.5),
+                reason: 'send $i: ${cameras[i - 1]} -> ${cameras[i]}');
+          }
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      });
+    }
+  }
+
+  // On iOS the first move of a new touch has been seen carrying a delta
+  // measured from the previous touch's last position. Movement must come
+  // from positions, never from event deltas.
+  for (final gestures in [
+    GlbGesture.all,
+    GlbGesture.orbit,
+    {GlbGesture.rotate}
+  ]) {
+    testWidgets('a bogus event delta does not move the model ($gestures)',
+        (tester) async {
+      await pumpView(tester, view(gestures, 'bogus-$gestures'));
+      final center = tester.getCenter(find.byType(GlbView));
+      const pointer = 7;
+      var position = center;
+      await tester.sendEventToBinding(
+          PointerDownEvent(pointer: pointer, position: position));
+      for (var i = 0; i < 12; i++) {
+        final next = position + const Offset(10, 0);
+        await tester.sendEventToBinding(PointerMoveEvent(
+          pointer: pointer,
+          position: next,
+          // The first move reports a huge, wrong delta; the rest are right.
+          delta: i == 0 ? const Offset(-220, 0) : next - position,
+        ));
+        position = next;
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await tester.sendEventToBinding(
+          PointerUpEvent(pointer: pointer, position: position));
+      await tester.pumpAndSettle();
+      expect(cameras, isNotEmpty);
+      for (final c in cameras) {
+        expect(c['yaw']! as double, inInclusiveRange(0, 50), reason: '$c');
+      }
+    });
+  }
+
   testWidgets('rotate-only view lets a vertical list scroll', (tester) async {
     final controller = ScrollController();
     await pumpView(
