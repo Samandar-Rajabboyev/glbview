@@ -55,6 +55,28 @@ GlbView.asset(
 )
 ```
 
+### Material overrides
+
+Swap a material's textures or color at runtime, keyed by the glTF material
+name, e.g. per-tier badge faces drawn with `dart:ui` and encoded to PNG.
+Changing overrides re-uploads the already-parsed model to the same native
+texture: no re-parse, no texture recreation.
+
+```dart
+GlbView.asset(
+  'assets/badge.glb',
+  materialOverrides: {
+    'back': GlbMaterialOverride(
+      baseColorTexture: tierPng,      // cache it: compared by identity
+      baseColor: Colors.white,        // optional, sRGB
+    ),
+  },
+)
+```
+
+Primitives that share a material are merged, so one override covers every
+mesh using that material. `GlbPrimitive.materialName` lists the names.
+
 ## Supported glTF
 
 - Node hierarchy of the default scene (matrix or TRS), flattened to world space

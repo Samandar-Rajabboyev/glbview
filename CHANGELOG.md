@@ -1,3 +1,12 @@
+## 0.2.0
+
+* `materialOverrides` on `GlbView`: replace a material's base color texture,
+  normal map, metallic-roughness map or base color at runtime, keyed by
+  material name. Changes re-upload the cached model without re-parsing or
+  recreating the texture.
+* `GlbPrimitive.materialName` and `GlbPrimitive.copyWith`.
+* Example: cube faces drawn at runtime with `dart:ui`.
+
 ## 0.1.1
 
 * No functional changes; republished after 0.1.0.

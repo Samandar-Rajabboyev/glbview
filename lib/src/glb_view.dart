@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'glb_channel.dart';
+import 'glb_material_override.dart';
 import 'glb_parser.dart';
 import 'glb_style.dart';
 
@@ -37,6 +38,7 @@ class GlbView extends StatefulWidget {
     this.gradientMix = 0.0,
     this.sparkle = 0.5,
     this.specularColor = const Color(0xFFFFFFFF),
+    this.materialOverrides,
   })  : assetName = name,
         bytes = null;
 
@@ -61,6 +63,7 @@ class GlbView extends StatefulWidget {
     this.gradientMix = 0.0,
     this.sparkle = 0.5,
     this.specularColor = const Color(0xFFFFFFFF),
+    this.materialOverrides,
   })  : assetName = null,
         package = null,
         bundle = null;
@@ -114,6 +117,13 @@ class GlbView extends StatefulWidget {
   /// Color of specular highlights.
   final Color specularColor;
 
+  /// Per-material replacements keyed by glTF material name, e.g. a texture
+  /// generated at runtime. Changing them re-uploads the already-parsed model
+  /// to the same native texture: no re-parse and no texture recreation.
+  /// Keep the byte buffers identical across rebuilds (see
+  /// [GlbMaterialOverride]).
+  final Map<String, GlbMaterialOverride>? materialOverrides;
+
   GlbStyle get style {
     final colors = gradientColors;
     return GlbStyle(
@@ -155,6 +165,10 @@ class _GlbViewState extends State<GlbView> {
   /// Parsed model, reused when only the texture needs recreating.
   Future<GlbModel>? _model;
 
+  /// Overrides in the last model upload, and whether a re-upload is running.
+  Map<String, GlbMaterialOverride>? _sentOverrides;
+  bool _overridesBusy = false;
+
   late double _yaw = widget.initialYaw;
   late double _pitch =
       widget.initialPitch.clamp(GlbView.minPitch, GlbView.maxPitch);
@@ -190,8 +204,11 @@ class _GlbViewState extends State<GlbView> {
         old.autoRotate != widget.autoRotate ||
         old.autoRotateDegreesPerSecond != widget.autoRotateDegreesPerSecond) {
       _recreate();
-    } else if (old.style != widget.style) {
-      _pushStyle();
+    } else {
+      if (old.style != widget.style) _pushStyle();
+      if (!mapEquals(old.materialOverrides, widget.materialOverrides)) {
+        _syncOverrides();
+      }
     }
   }
 
@@ -219,6 +236,8 @@ class _GlbViewState extends State<GlbView> {
     _error = null;
     _cameraBusy = false;
     _cameraDirty = false;
+    _sentOverrides = null;
+    _overridesBusy = false;
     _load(gen);
   }
 
@@ -253,16 +272,51 @@ class _GlbViewState extends State<GlbView> {
       // Style goes before the model (so the first frame is right) and again
       // after it, in case the widget changed while the upload was running.
       await GlbChannel.setStyle(id, widget.style);
-      await GlbChannel.loadModel(id, model);
+      await _uploadModel(id, model);
       if (gen != _generation || !mounted) return;
       await GlbChannel.setStyle(id, widget.style);
       if (gen != _generation || !mounted) return;
       setState(() => _ready = true);
+      // Overrides may have changed while the first upload was running.
+      _syncOverrides();
     } catch (e, st) {
       if (gen != _generation || !mounted) return;
       debugPrint('GlbView: failed to load model: $e\n$st');
       setState(() => _error = e);
     }
+  }
+
+  Future<void> _uploadModel(int id, GlbModel model) {
+    final overrides = widget.materialOverrides;
+    _sentOverrides = overrides;
+    return GlbChannel.loadModel(id, model.withMaterialOverrides(overrides));
+  }
+
+  /// Re-uploads the cached model when the overrides differ from the last
+  /// upload. Serialized, and loops until the latest overrides are sent.
+  Future<void> _syncOverrides() async {
+    final id = _textureId;
+    final modelFuture = _model;
+    if (!_ready ||
+        _overridesBusy ||
+        id == null ||
+        modelFuture == null ||
+        mapEquals(_sentOverrides, widget.materialOverrides)) {
+      return;
+    }
+    final gen = _generation;
+    _overridesBusy = true;
+    try {
+      await _uploadModel(id, await modelFuture);
+    } catch (e, st) {
+      if (gen != _generation || !mounted) return;
+      debugPrint('GlbView: failed to apply material overrides: $e\n$st');
+      setState(() => _error = e);
+      return;
+    } finally {
+      if (gen == _generation) _overridesBusy = false;
+    }
+    if (gen == _generation && mounted) _syncOverrides();
   }
 
   Future<GlbModel> _parse() async {

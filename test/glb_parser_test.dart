@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Color;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:glbview/glbview.dart';
@@ -105,6 +106,36 @@ void main() {
         isTrue);
     expect(model.primitives.first.clearcoat, closeTo(0.35, 1e-6));
     expect(_maxRadius(model), closeTo(1, 1e-5));
+  });
+
+  test('material overrides replace inputs by material name', () {
+    final model = parseGlb(_asset('cube.glb'));
+    final original = model.primitives.single;
+    expect(original.materialName, 'checker');
+
+    final png = Uint8List.fromList([0x89, 0x50, 0x4E, 0x47]);
+    final overridden = model.withMaterialOverrides({
+      'checker': GlbMaterialOverride(
+        baseColorTexture: png,
+        baseColor: const Color(0xFF808080),
+      ),
+      'missing': const GlbMaterialOverride(),
+    });
+    final p = overridden.primitives.single;
+    expect(identical(p.texture, png), isTrue);
+    expect(identical(p.vertices, original.vertices), isTrue); // shared
+    // sRGB 0x80 -> linear (0.502^2.2, the same gamma as the shaders).
+    expect(p.baseColor[0], closeTo(0.2195, 0.001));
+    expect(p.baseColor[3], 1);
+    expect(p.metallic, original.metallic);
+    expect(original.texture, isNot(same(png))); // source model untouched
+
+    expect(identical(model.withMaterialOverrides(null), model), isTrue);
+    // Equality is by buffer identity, so cached bytes compare equal.
+    expect(GlbMaterialOverride(baseColorTexture: png),
+        GlbMaterialOverride(baseColorTexture: png));
+    expect(GlbMaterialOverride(baseColorTexture: png),
+        isNot(GlbMaterialOverride(baseColorTexture: Uint8List.fromList(png))));
   });
 
   test('rejects garbage and compressed files', () {

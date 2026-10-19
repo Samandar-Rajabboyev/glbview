@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:glbview/glbview.dart';
 
 import 'style_page.dart';
+import 'tier_texture.dart';
 
 void main() => runApp(const GlbViewExampleApp());
 
@@ -27,6 +28,9 @@ class GlbViewExampleApp extends StatelessWidget {
 
 enum Sample { cube, star, badge, broken }
 
+/// Cube face textures: the file's own, or ones drawn at runtime.
+enum CubeFace { file, gold, violet }
+
 class ViewerPage extends StatefulWidget {
   const ViewerPage({super.key});
 
@@ -38,6 +42,27 @@ class _ViewerPageState extends State<ViewerPage> {
   Sample _sample = Sample.cube;
   bool _autoRotate = true;
   double _speed = 20;
+  CubeFace _face = CubeFace.file;
+
+  /// Generated textures, cached so the override bytes stay identical across
+  /// rebuilds (a new buffer would re-upload the model).
+  final Map<CubeFace, Uint8List> _faceTextures = {};
+
+  Future<void> _selectFace(CubeFace face) async {
+    if (face != CubeFace.file && !_faceTextures.containsKey(face)) {
+      _faceTextures[face] = await switch (face) {
+        CubeFace.gold => drawTierTexture('TOP-1%', const [
+          Color(0xFFFFD86B),
+          Color(0xFFB8741A),
+        ]),
+        _ => drawTierTexture('TOP-5%', const [
+          Color(0xFF7B5CFF),
+          Color(0xFFFF6FD8),
+        ]),
+      };
+    }
+    if (mounted) setState(() => _face = face);
+  }
 
   // Deliberately not a GLB, to show the error UI.
   static final Uint8List _brokenBytes = Uint8List.fromList(
@@ -59,6 +84,14 @@ class _ViewerPageState extends State<ViewerPage> {
         autoRotateDegreesPerSecond: _speed,
         initialPitch: 20,
         placeholder: const _Placeholder(),
+        // 'checker' is the cube's material name in the GLB.
+        materialOverrides: _face == CubeFace.file
+            ? null
+            : {
+                'checker': GlbMaterialOverride(
+                  baseColorTexture: _faceTextures[_face],
+                ),
+              },
       ),
       Sample.star => GlbView.asset(
         'assets/star.glb',
@@ -137,6 +170,22 @@ class _ViewerPageState extends State<ViewerPage> {
             selected: {_sample},
             onSelectionChanged: (s) => setState(() => _sample = s.first),
           ),
+          if (_sample == Sample.cube) ...[
+            const SizedBox(height: 12),
+            SegmentedButton<CubeFace>(
+              segments: const [
+                ButtonSegment(
+                  value: CubeFace.file,
+                  label: Text('File texture'),
+                ),
+                ButtonSegment(value: CubeFace.gold, label: Text('TOP-1%')),
+                ButtonSegment(value: CubeFace.violet, label: Text('TOP-5%')),
+              ],
+              showSelectedIcon: false,
+              selected: {_face},
+              onSelectionChanged: (s) => _selectFace(s.first),
+            ),
+          ],
           SwitchListTile(
             title: const Text('Auto-rotate'),
             value: _autoRotate,

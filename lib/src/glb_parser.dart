@@ -29,6 +29,7 @@ class GlbPrimitive {
     this.normalScale = 1,
     this.metallicRoughnessTexture,
     this.clearcoat = 0,
+    this.materialName,
   });
 
   /// Non-indexed triangles, interleaved
@@ -59,7 +60,35 @@ class GlbPrimitive {
   /// `KHR_materials_clearcoat.clearcoatFactor`, 0 if absent.
   final double clearcoat;
 
+  /// The glTF material's `name`, or null for unnamed materials and geometry
+  /// without a material. Primitives sharing a material are merged, so names
+  /// are unique within a model unless the file reuses one.
+  final String? materialName;
+
   int get vertexCount => vertices.length ~/ kFloatsPerVertex;
+
+  /// A copy with the given material inputs replaced. Geometry is shared, not
+  /// copied.
+  GlbPrimitive copyWith({
+    Float32List? baseColor,
+    Uint8List? texture,
+    Uint8List? normalTexture,
+    Uint8List? metallicRoughnessTexture,
+  }) {
+    return GlbPrimitive(
+      vertices: vertices,
+      baseColor: baseColor ?? this.baseColor,
+      texture: texture ?? this.texture,
+      metallic: metallic,
+      roughness: roughness,
+      normalTexture: normalTexture ?? this.normalTexture,
+      normalScale: normalScale,
+      metallicRoughnessTexture:
+          metallicRoughnessTexture ?? this.metallicRoughnessTexture,
+      clearcoat: clearcoat,
+      materialName: materialName,
+    );
+  }
 }
 
 /// A model flattened into world space, centered at the origin and scaled so
@@ -161,6 +190,7 @@ class _GlbParser {
         normalScale: material.normalScale,
         metallicRoughnessTexture: material.metallicRoughnessTexture,
         clearcoat: material.clearcoat,
+        materialName: material.name,
       ));
     }
     if (primitives.isEmpty) {
@@ -694,6 +724,7 @@ class _GlbParser {
       normalScale: scale is num ? scale.toDouble() : 1.0,
       metallicRoughnessTexture: textureOf(pbr['metallicRoughnessTexture']),
       clearcoat: clearcoat is num ? clearcoat.toDouble().clamp(0.0, 1.0) : 0.0,
+      name: mat['name'] is String ? mat['name'] as String : null,
     );
   }
 
@@ -794,6 +825,7 @@ class _Material {
     this.normalScale = 1,
     this.metallicRoughnessTexture,
     this.clearcoat = 0,
+    this.name,
   });
 
   final Float32List color;
@@ -804,6 +836,7 @@ class _Material {
   final double normalScale;
   final Uint8List? metallicRoughnessTexture;
   final double clearcoat;
+  final String? name;
 }
 
 /// Growable float buffer that avoids boxing.
